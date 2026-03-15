@@ -14,16 +14,16 @@ _✨ 基于 [OneBot](https://github.com/howmanybots/onebot/blob/master/README.md
 </div>
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/hoshinonyaruko/gensokyo-kook/main/LICENSE">
-    <img src="https://img.shields.io/github/license/hoshinonyaruko/gensokyo-kook" alt="license">
+  <a href="https://raw.githubusercontent.com/tiedanGH/gensokyo-kook/main/LICENSE">
+    <img src="https://img.shields.io/github/license/tiedanGH/gensokyo-kook" alt="license">
   </a>
-  <a href="https://github.com/hoshinonyaruko/gensokyo-kook/releases">
-    <img src="https://img.shields.io/github/v/release/hoshinonyaruko/gensokyo-kook?color=blueviolet&include_prereleases" alt="release">
+  <a href="https://github.com/tiedanGH/gensokyo-kook/releases">
+    <img src="https://img.shields.io/github/v/release/tiedanGH/gensokyo-kook?color=blueviolet&include_prereleases" alt="release">
   </a>
   <a href="https://github.com/howmanybots/onebot/blob/master/README.md">
     <img src="https://img.shields.io/badge/OneBot-v11-blue?style=flat&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAIVBMVEUAAAAAAAADAwMHBwceHh4UFBQNDQ0ZGRkoKCgvLy8iIiLWSdWYAAAAAXRSTlMAQObYZgAAAQVJREFUSMftlM0RgjAQhV+0ATYK6i1Xb+iMd0qgBEqgBEuwBOxU2QDKsjvojQPvkJ/ZL5sXkgWrFirK4MibYUdE3OR2nEpuKz1/q8CdNxNQgthZCXYVLjyoDQftaKuniHHWRnPh2GCUetR2/9HsMAXyUT4/3UHwtQT2AggSCGKeSAsFnxBIOuAggdh3AKTL7pDuCyABcMb0aQP7aM4AnAbc/wHwA5D2wDHTTe56gIIOUA/4YYV2e1sg713PXdZJAuncdZMAGkAukU9OAn40O849+0ornPwT93rphWF0mgAbauUrEOthlX8Zu7P5A6kZyKCJy75hhw1Mgr9RAUvX7A3csGqZegEdniCx30c3agAAAABJRU5ErkJggg==" alt="gensokyo-kook">
   </a>
-  <a href="https://github.com/hoshinonyaruko/gensokyo-kook/actions">
+  <a href="https://github.com/tiedanGH/gensokyo-kook/actions">
     <img src="images/badge.svg" alt="action">
   </a>
   <a href="https://goreportcard.com/report/github.com/hoshinonyaruko/gensokyo-kook">
@@ -34,12 +34,25 @@ _✨ 基于 [OneBot](https://github.com/howmanybots/onebot/blob/master/README.md
 <p align="center">
   <a href="https://github.com/howmanybots/onebot/blob/master/README.md">文档</a>
   ·
-  <a href="https://github.com/hoshinonyaruko/gensokyo-kook/releases">下载</a>
+  <a href="https://github.com/tiedanGH/gensokyo-kook/releases">下载</a>
   ·
-  <a href="https://github.com/hoshinonyaruko/gensokyo-kook/releases">开始使用</a>
+  <a href="https://github.com/tiedanGH/gensokyo-kook/releases">开始使用</a>
   ·
-  <a href="https://github.com/hoshinonyaruko/gensokyo-kook/blob/master/CONTRIBUTING.md">参与贡献</a>
+  <a href="https://github.com/hoshinonyaruko/gensokyo-kook/blob/master/CONTRIBUTING.md"></a>
+  参与贡献
 </p>
+
+## ⚠️ Fork 声明
+
+本仓库为 **fork 版本**。原始仓库已**无法访问或不再维护**，因此基于原项目代码创建此仓库用于继续使用。
+
+- 本项目仅做 **非官方延续维护**
+- 维护时间与更新 **随缘进行**
+- **原作者版权与贡献完全保留**
+
+感谢原作者为社区做出的贡献。
+
+原项目地址（历史参考）：[https://github.com/hoshinonyaruko/gensokyo-kook](https://github.com/hoshinonyaruko/gensokyo-kook)
 
 ## 领先性能 超快响应 体验更流畅
 - [`hoshinonyaruko/gensokyo`](https://github.com/Hoshinonyaruko/Gensokyo): QQ-Api Onebotv11实现
@@ -81,7 +94,7 @@ gensokyo-kook兼容 [OneBot-v11](https://github.com/botuniverse/onebot-11) ，�
 
 ### 拓展支持
 
-> 拓展 API 可前往 [文档](docs/cqhttp.md) 查看
+> <del>拓展 API 可前往 [文档](docs/cqhttp.md) 查看</del>
 
 - [x] 连接多个ws地址
 - [x] 绝佳的稳定性
