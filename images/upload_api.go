@@ -210,7 +210,7 @@ func UploadImage(filePath, token string, baseurl string) (string, error) {
 	fileName := filepath.Base(filePath)
 
 	// 创建ApiHelper实例
-	apiHelper := helper.NewApiHelper("/api/v3/asset/create", token, baseurl, "", "")
+	apiHelper := helper.NewApiHelper("/v3/asset/create", token, baseurl, "", "")
 
 	// 添加文件到ApiHelper
 	apiHelper.AddFile("file", fileName, fileData)
