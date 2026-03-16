@@ -1,10 +1,5 @@
 package handlers
 
-import (
-	"github.com/hoshinonyaruko/gensokyo-kook/callapi"
-	"github.com/hoshinonyaruko/gensokyo-kook/mylog"
-)
-
 type Response struct {
 	Retcode int          `json:"retcode"`
 	Status  string       `json:"status"`
@@ -13,7 +8,6 @@ type Response struct {
 }
 
 // Member Onebot 群成员
-// 当前 KOOK 平台群成员列表能力不可用，结构体保留用于兼容 OneBot 响应格式。
 type MemberList struct {
 	GroupID         int64  `json:"group_id"`
 	UserID          int64  `json:"user_id"`
@@ -33,35 +27,6 @@ type MemberList struct {
 	ShutUpTimestamp int64  `json:"shut_up_timestamp"`
 }
 
-func init() {
-	callapi.RegisterHandler("get_group_member_list", GetGroupMemberList)
-}
-
-// GetGroupMemberList 临时空实现：
-// KOOK 当前可能不支持稳定获取频道/群成员列表，这里返回一个结构正确且 data 为空的占位响应，避免调用方阻塞或报错。
-func GetGroupMemberList(client callapi.Client, Token string, BaseUrl string, message callapi.ActionMessage) (string, error) {
-	responseJSON := map[string]interface{}{
-		"retcode": 0,
-		"status":  "ok",
-		"data":    []MemberList{},
-		"echo":    message.Echo,
-	}
-
-	mylog.Printf("get_group_member_list: KOOK capability unavailable, returning empty placeholder response")
-
-	if err := client.SendMessage(responseJSON); err != nil {
-		mylog.Printf("Error sending get_group_member_list placeholder response: %v", err)
-	}
-
-	result, err := ConvertMapToJSONString(responseJSON)
-	if err != nil {
-		mylog.Printf("Error marshaling data: %v", err)
-		return "", nil
-	}
-	return result, nil
-}
-
-// 以下注释部分为原框架代码，暂时保留。
 // func init() {
 // 	callapi.RegisterHandler("get_group_member_list", GetGroupMemberList)
 // }

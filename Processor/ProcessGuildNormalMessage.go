@@ -13,13 +13,6 @@ import (
 	"github.com/idodo/golang-bot/kaihela/api/base/event"
 )
 
-func getGuildAuthorID(data *event.MessageKMarkdownEvent) string {
-	if data.Author.ID != "" {
-		return data.Author.ID
-	}
-	return data.AuthorId
-}
-
 // ProcessGuildNormalMessage 处理频道常规消息
 func (p *Processors) ProcessGuildNormalMessage(data *event.MessageKMarkdownEvent) error {
 	if !p.Settings.GlobalChannelToGroup {
@@ -33,12 +26,11 @@ func (p *Processors) ProcessGuildNormalMessage(data *event.MessageKMarkdownEvent
 		}
 		var userid64 int64
 		var err error
-		authorID := getGuildAuthorID(data)
 		//框架内指令
 		//p.HandleFrameworkCommand(messageText, data, "guild")
 
 		//映射str的userid到int
-		userid64, err = strconv.ParseInt(authorID, 10, 64)
+		userid64, err = strconv.ParseInt(data.Author.ID, 10, 64)
 		if err != nil {
 			mylog.Printf("Error ParseInt userid64 127: %v", err)
 			return nil
@@ -113,8 +105,7 @@ func (p *Processors) ProcessGuildNormalMessage(data *event.MessageKMarkdownEvent
 		var userid64 int64
 		var ChannelID64 int64
 		var err error
-		authorID := getGuildAuthorID(data)
-		userid64, err = strconv.ParseInt(authorID, 10, 64)
+		userid64, err = strconv.ParseInt(data.Author.ID, 10, 64)
 		if err != nil {
 			mylog.Printf("Error ParseInt userid64 127: %v", err)
 			return nil
@@ -157,7 +148,7 @@ func (p *Processors) ProcessGuildNormalMessage(data *event.MessageKMarkdownEvent
 		}
 		var IsBindedUserId, IsBindedGroupId bool
 		if config.GetHashIDValue() {
-			IsBindedUserId = idmap.CheckValue(authorID, userid64)
+			IsBindedUserId = idmap.CheckValue(data.Author.ID, userid64)
 			IsBindedGroupId = idmap.CheckValue(data.TargetId, ChannelID64)
 		} else {
 			IsBindedUserId = idmap.CheckValuev2(userid64)

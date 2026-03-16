@@ -1,28 +1,9 @@
 package handlers
 
 import (
-	"fmt"
-	"strconv"
-	"time"
-
 	"github.com/hoshinonyaruko/gensokyo-kook/callapi"
 	"github.com/hoshinonyaruko/gensokyo-kook/mylog"
 )
-
-func parseOneBotID(id interface{}) (int64, error) {
-	switch v := id.(type) {
-	case string:
-		return strconv.ParseInt(v, 10, 64)
-	case int64:
-		return v, nil
-	case int:
-		return int64(v), nil
-	case float64:
-		return int64(v), nil
-	default:
-		return 0, fmt.Errorf("unsupported id type: %T", id)
-	}
-}
 
 // 初始化handler，在程序启动时会被调用
 func init() {
@@ -84,37 +65,24 @@ func buildResponseForSingleMember(memberInfo *MemberInfo, echoValue interface{})
 
 // getGroupMemberInfo是处理获取群成员信息的函数
 func GetGroupMemberInfo(client callapi.Client, Token string, BaseUrl string, message callapi.ActionMessage) (string, error) {
-	userID, err := parseOneBotID(message.Params.UserID)
-	if err != nil {
-		mylog.Printf("get_group_member_info: invalid user_id %v: %v", message.Params.UserID, err)
-		return "", nil
-	}
-
-	groupID, err := parseOneBotID(message.Params.GroupID)
-	if err != nil {
-		mylog.Printf("get_group_member_info: invalid group_id %v: %v", message.Params.GroupID, err)
-		return "", nil
-	}
-
-	// 使用请求参数里的真实 user_id/group_id 构造响应，避免返回固定占位符 ID。
-	now := int32(time.Now().Unix())
+	// 使用虚拟数据构造 MemberInfo
 	memberInfo := &MemberInfo{
-		UserID:          userID,
-		GroupID:         groupID,
-		Nickname:        "主人", // 虚拟昵称
+		UserID:          123456789, // 虚拟的 QQ 号
+		GroupID:         987654321, // 虚拟的群号
+		Nickname:        "主人",      // 虚拟昵称
 		Card:            "主人",
 		Sex:             "unknown", // 性别未知
 		Age:             20,        // 虚拟年龄
 		Area:            "虚拟地区",
-		JoinTime:        now,
-		LastSentTime:    now,
-		Level:           "1",      // 虚拟成员等级
-		Role:            "member", // 角色为普通成员
-		Unfriendly:      false,    // 没有不良记录
+		JoinTime:        1630416000, // 虚拟加群时间戳
+		LastSentTime:    1630502400, // 虚拟最后发言时间戳
+		Level:           "1",        // 虚拟成员等级
+		Role:            "member",   // 角色为普通成员
+		Unfriendly:      false,      // 没有不良记录
 		Title:           "虚拟头衔",
-		TitleExpireTime: 0,
-		CardChangeable:  true, // 允许修改群名片
-		ShutUpTimestamp: 0,    // 不在禁言中
+		TitleExpireTime: 1630598800, // 虚拟头衔过期时间
+		CardChangeable:  true,       // 允许修改群名片
+		ShutUpTimestamp: 0,          // 不在禁言中
 	}
 
 	// 构建响应JSON
@@ -122,7 +90,7 @@ func GetGroupMemberInfo(client callapi.Client, Token string, BaseUrl string, mes
 	mylog.Printf("get_group_member_info: %s\n", responseJSON)
 
 	// 发送响应回去
-	err = client.SendMessage(responseJSON)
+	err := client.SendMessage(responseJSON)
 	if err != nil {
 		mylog.Printf("发送消息时出错: %v", err)
 	}
