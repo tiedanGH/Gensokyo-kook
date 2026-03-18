@@ -339,17 +339,10 @@ func RevertTransformedText(data interface{}, msgtype string, Token string, BaseU
 					return "[CQ:at,qq=" + BotID + "]"
 				}
 			}
-			// 不是 BotID，进行正常映射
-			userID64, err := idmap.StoreIDv2(userID)
-			if err != nil {
-				//如果储存失败(数据库损坏)返回原始值
-				mylog.Printf("Error storing ID: %v", err)
-				return "[CQ:at,qq=" + userID + "]"
-			}
-			// 类型转换
-			userIDStr := strconv.FormatInt(userID64, 10)
-			// 经过转换的cq码
-			return "[CQ:at,qq=" + userIDStr + "]"
+			// 普通用户 @ 直接透传 KOOK 的真实用户 ID。
+			// 这里如果再走 idmap.StoreIDv2，会把真实 ID 映射成 9 位虚拟值，
+			// 导致上报给 OneBot 的 CQ at 与事件里的 user_id 不一致。
+			return "[CQ:at,qq=" + userID + "]"
 		}
 		return m
 	})
@@ -638,14 +631,7 @@ func ConvertToSegmentedMessage(data interface{}) []map[string]interface{} {
 	for _, match := range atMatches {
 		userID := match[1]
 
-		userID64, err := idmap.StoreIDv2(userID)
-		if err != nil {
-			// 如果存储失败，记录错误并继续使用原始 userID
-			mylog.Printf("Error storing ID: %v", err)
-		} else {
-			// 类型转换成功，使用新的 userID
-			userID = strconv.FormatInt(userID64, 10)
-		}
+		// 与字符串 CQ 码路径保持一致，数组消息段中的 at.qq 也直接使用真实用户 ID。
 
 		// 构建at部分的映射并加入到messageSegments
 		atSegment := map[string]interface{}{
