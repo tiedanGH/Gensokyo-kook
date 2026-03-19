@@ -28,14 +28,15 @@ type FriendData struct {
 func HandleGetFriendList(client callapi.Client, Token string, BaseUrl string, message callapi.ActionMessage) (string, error) {
 	var output APIOutput
 
-	for i := 0; i < 10; i++ { // Assume we want to loop 10 times to create friend data
-		data := FriendData{
-			Nickname: "小狐狸",
-			Remark:   "",
-			UserID:   "2022717137",
-		}
-		output.Data = append(output.Data, data)
-	}
+    // Assume we want to loop 10 times to create friend data
+    // 	for i := 0; i < 10; i++ {
+    // 		data := FriendData{
+    // 			Nickname: "小狐狸",
+    // 			Remark:   "",
+    // 			UserID:   "2022717137",
+    // 		}
+    // 		output.Data = append(output.Data, data)
+    // 	}
 
 	output.Message = ""
 	output.RetCode = 0
