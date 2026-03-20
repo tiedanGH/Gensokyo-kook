@@ -339,9 +339,7 @@ func RevertTransformedText(data interface{}, msgtype string, Token string, BaseU
 					return "[CQ:at,qq=" + BotID + "]"
 				}
 			}
-			// 普通用户 @ 直接透传 KOOK 的真实用户 ID。
-			// 这里如果再走 idmap.StoreIDv2，会把真实 ID 映射成 9 位虚拟值，
-			// 导致上报给 OneBot 的 CQ at 与事件里的 user_id 不一致。
+			// 普通用户 @ 直接透传 KOOK 的真实用户 ID，不再额外映射
 			return "[CQ:at,qq=" + userID + "]"
 		}
 		return m
@@ -631,7 +629,7 @@ func ConvertToSegmentedMessage(data interface{}) []map[string]interface{} {
 	for _, match := range atMatches {
 		userID := match[1]
 
-		// 与字符串 CQ 码路径保持一致，数组消息段中的 at.qq 也直接使用真实用户 ID。
+		// 与字符串 CQ 码路径保持一致，数组消息段中的 at.qq 直接使用真实用户 ID
 
 		// 构建at部分的映射并加入到messageSegments
 		atSegment := map[string]interface{}{

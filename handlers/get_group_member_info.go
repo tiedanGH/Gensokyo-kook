@@ -96,25 +96,25 @@ func GetGroupMemberInfo(client callapi.Client, Token string, BaseUrl string, mes
 		return "", nil
 	}
 
-	// 使用请求参数里的真实 user_id/group_id 构造响应，避免返回固定占位符 ID。
+	// 构建成员数据的映射
 	now := int32(time.Now().Unix())
 	memberInfo := &MemberInfo{
-		UserID:          userID,
-		GroupID:         groupID,
-		Nickname:        "主人", // 虚拟昵称
-		Card:            "主人",
+		UserID:          userID,    // 使用请求中的 user_id
+		GroupID:         groupID,   // 使用请求中的 group_id
+		Nickname:        "测试用户",    // 虚拟昵称
+		Card:            "测试用户",    // 虚拟群名片
 		Sex:             "unknown", // 性别未知
 		Age:             20,        // 虚拟年龄
 		Area:            "虚拟地区",
-		JoinTime:        now,
-		LastSentTime:    now,
+		JoinTime:        now,       // 加入时间为当前时间
+		LastSentTime:    now,       // 最后发言时间为当前时间
 		Level:           "1",      // 虚拟成员等级
 		Role:            "member", // 角色为普通成员
 		Unfriendly:      false,    // 没有不良记录
 		Title:           "虚拟头衔",
 		TitleExpireTime: 0,
-		CardChangeable:  true, // 允许修改群名片
-		ShutUpTimestamp: 0,    // 不在禁言中
+		CardChangeable:  true,      // 允许修改群名片
+		ShutUpTimestamp: 0,         // 不在禁言中
 	}
 
 	// 构建响应JSON
