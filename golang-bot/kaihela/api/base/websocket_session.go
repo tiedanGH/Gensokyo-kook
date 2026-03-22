@@ -1,12 +1,14 @@
 package base
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -22,8 +24,12 @@ type WebSocketSession struct {
 	SessionFile  string
 	WsConn       *websocket.Conn
 	WsWriteLock  *sync.Mutex
+	ConnMu       sync.RWMutex
 	ReconnectMu  sync.Mutex
 	Reconnecting bool
+	SessionCtx   context.Context
+	SessionStop  context.CancelFunc
+	SessionSeq   uint64
 	//sWSClient
 }
 
@@ -90,57 +96,147 @@ func (ws *WebSocketSession) ConnectWebsocket(gateway string) error {
 		log.WithError(err).Error("ConnectWebsocket Dial")
 		return err
 	}
-	ws.WsConn = c
+	sessionID := ws.bindConnection(c)
+	log.WithField("sessionSeq", sessionID).Info("kook websocket connection bound to session lifecycle")
 
 	ws.wsConnectOk()
-	go func() {
-		defer c.Close()
-		for {
-			_, message, err := c.ReadMessage()
-			if err != nil {
-				log.WithError(err).Warn("kook websocket read failed")
-				ws.handleDisconnect(err)
-				return
-			}
-			log.WithField("message", message).Trace("websocket recv")
-			_, err = ws.ReceiveData(message)
-			if err != nil {
-				log.WithError(err).Error("ReceiveData error")
-			}
-		}
-	}()
+	ws.startReadLoop(c, sessionID)
 	return nil
 }
 
-func (ws *WebSocketSession) handleDisconnect(err error) {
+func (ws *WebSocketSession) bindConnection(conn *websocket.Conn) uint64 {
+	ws.ConnMu.Lock()
+	defer ws.ConnMu.Unlock()
+
+	if ws.SessionStop != nil {
+		log.Info("cancel previous websocket session lifecycle before binding new connection")
+		ws.SessionStop()
+	}
+	if ws.WsConn != nil && ws.WsConn != conn {
+		log.Info("close previous websocket connection before binding new connection")
+		_ = ws.WsConn.Close()
+	}
+
+	ws.WsConn = conn
+	ws.SessionCtx, ws.SessionStop = context.WithCancel(context.Background())
+	ws.SessionSeq = atomic.AddUint64(&ws.SessionSeq, 1)
+	return ws.SessionSeq
+}
+
+func (ws *WebSocketSession) startReadLoop(conn *websocket.Conn, sessionSeq uint64) {
+	log.WithField("sessionSeq", sessionSeq).Info("read loop started")
+	go func() {
+		defer log.WithField("sessionSeq", sessionSeq).Info("read loop exited")
+		for {
+			if ws.isSessionInactive(conn, sessionSeq) {
+				log.WithField("sessionSeq", sessionSeq).Info("read loop exits because session is inactive")
+				return
+			}
+
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				log.WithError(err).WithField("sessionSeq", sessionSeq).Warn("read loop exits due to websocket read error")
+				if ws.isSessionInactive(conn, sessionSeq) {
+					log.WithField("sessionSeq", sessionSeq).Info("handleDisconnect skipped because read loop belongs to stale session")
+					return
+				}
+				ws.handleDisconnect("read_loop", err)
+				return
+			}
+			log.WithField("message", message).WithField("sessionSeq", sessionSeq).Trace("websocket recv")
+			_, err = ws.ReceiveData(message)
+			if err != nil {
+				log.WithError(err).WithField("sessionSeq", sessionSeq).Error("ReceiveData error")
+			}
+		}
+	}()
+}
+
+func (ws *WebSocketSession) isSessionInactive(conn *websocket.Conn, sessionSeq uint64) bool {
+	ws.ConnMu.RLock()
+	defer ws.ConnMu.RUnlock()
+
+	if ws.WsConn != conn {
+		return true
+	}
+	if ws.SessionSeq != sessionSeq {
+		return true
+	}
+	if ws.SessionCtx == nil {
+		return false
+	}
+
+	select {
+	case <-ws.SessionCtx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func (ws *WebSocketSession) handleDisconnect(source string, err error) {
+	log.WithError(err).WithField("source", source).Info("enter handleDisconnect")
 	ws.ReconnectMu.Lock()
 	if ws.Reconnecting {
+		log.WithField("source", source).Info("handleDisconnect skipped because reconnect loop is already running")
 		ws.ReconnectMu.Unlock()
 		return
 	}
 	ws.Reconnecting = true
+	log.WithField("source", source).Info("set reconnecting=true")
 	ws.ReconnectMu.Unlock()
 
-	go ws.reconnectLoop(err)
+	ws.shutdownCurrentSession("disconnect_"+source, true)
+	go ws.reconnectLoop(source, err)
 }
 
-func (ws *WebSocketSession) reconnectLoop(lastErr error) {
-	defer func() {
-		ws.ReconnectMu.Lock()
-		ws.Reconnecting = false
-		ws.ReconnectMu.Unlock()
-	}()
+func (ws *WebSocketSession) shutdownCurrentSession(reason string, closeConn bool) {
+	log.WithFields(log.Fields{
+		"reason":    reason,
+		"closeConn": closeConn,
+	}).Info("shutdown websocket session lifecycle")
 
-	log.WithError(lastErr).Warn("kook websocket disconnected, start reconnect loop")
-	ws.HeartBeatCron.Stop()
-	if ws.WsConn != nil {
+	ws.stopHeartbeatLifecycle(reason)
+
+	ws.ConnMu.Lock()
+	defer ws.ConnMu.Unlock()
+
+	if ws.SessionStop != nil {
+		log.WithField("reason", reason).Info("cancel websocket session context")
+		ws.SessionStop()
+		ws.SessionStop = nil
+		ws.SessionCtx = nil
+	}
+	if closeConn && ws.WsConn != nil {
+		log.WithField("reason", reason).Info("close websocket connection")
 		_ = ws.WsConn.Close()
 		ws.WsConn = nil
 	}
+}
+
+func (ws *WebSocketSession) reconnectLoop(source string, lastErr error) {
+	log.WithFields(log.Fields{
+		"source": source,
+		"error":  lastErr,
+	}).Warn("reconnect loop started")
+	defer func() {
+		ws.ReconnectMu.Lock()
+		ws.Reconnecting = false
+		log.Info("set reconnecting=false")
+		ws.ReconnectMu.Unlock()
+		log.Info("reconnect loop exited")
+	}()
 
 	for {
 		for attempt := 1; attempt <= 5; attempt++ {
-			log.Infof("kook websocket reconnect attempt %d/5", attempt)
+			ws.ConnMu.RLock()
+			hasOldConn := ws.WsConn != nil
+			ws.ConnMu.RUnlock()
+			log.WithFields(log.Fields{
+				"attempt":    attempt,
+				"maxAttempt": 5,
+				"oldConnNil": !hasOldConn,
+			}).Info("kook websocket reconnect attempt")
 
 			gateway, err := ws.ReqGateWay()
 			if err != nil {
@@ -153,7 +249,7 @@ func (ws *WebSocketSession) reconnectLoop(lastErr error) {
 			ws.FSM.SetState(StatusGateway)
 			err = ws.ConnectWebsocket(gateway)
 			if err == nil {
-				log.Info("kook websocket reconnect dial success")
+				log.Info("kook websocket reconnect dial success, read loop and ping loop will be recreated by new session lifecycle")
 				return
 			}
 
@@ -169,7 +265,23 @@ func (ws *WebSocketSession) reconnectLoop(lastErr error) {
 func (ws *WebSocketSession) SendData(data []byte) error {
 	ws.WsWriteLock.Lock()
 	defer ws.WsWriteLock.Unlock()
-	return ws.WsConn.WriteMessage(websocket.TextMessage, data)
+
+	ws.ConnMu.RLock()
+	conn := ws.WsConn
+	ws.ConnMu.RUnlock()
+	if conn == nil {
+		err := errors.New("websocket connection is nil")
+		log.WithError(err).Warn("SendData aborted")
+		return err
+	}
+
+	err := conn.WriteMessage(websocket.TextMessage, data)
+	if err != nil {
+		log.WithError(err).Warn("SendData failed, trigger disconnect handling")
+		ws.handleDisconnect("send_data", err)
+		return err
+	}
+	return nil
 }
 
 func (ws *WebSocketSession) SaveSessionId(sessionId string) error {
@@ -199,9 +311,24 @@ func (ws *WebSocketSession) Start() {
 
 			// Cleanly close the connection by sending a close message and then
 			// waiting (with timeout) for the server to close the connection.
-			err := ws.WsConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-			if err != nil {
-				log.Println("write close:", err)
+			ws.ConnMu.RLock()
+			conn := ws.WsConn
+			ws.ConnMu.RUnlock()
+			if conn != nil {
+				err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+				if err != nil {
+					log.Println("write close:", err)
+					return
+				}
+			}
+			ws.shutdownCurrentSession("interrupt", true)
+			ws.ReconnectMu.Lock()
+			if ws.Reconnecting {
+				log.Info("interrupt clears reconnecting flag")
+				ws.Reconnecting = false
+			}
+			ws.ReconnectMu.Unlock()
+			if conn == nil {
 				return
 			}
 			return

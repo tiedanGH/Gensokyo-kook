@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/avast/retry-go/v4"
@@ -89,9 +90,12 @@ type StateSession struct {
 
 	StatusParams    map[string]*StatusParam
 	HeartBeatCron   *cron.Cron
+	HeartBeatCronMu sync.Mutex
 	LastPongAt      time.Time
 	LastPingAt      time.Time
 	PongTimeoutChan chan time.Time
+	HeartbeatCtx    context.Context
+	HeartbeatCancel context.CancelFunc
 }
 
 func NewStateSession(gateway string, compressed int) *StateSession {
@@ -137,6 +141,7 @@ func NewStateSession(gateway string, compressed int) *StateSession {
 
 			},
 			EventEnterPrefix + StatusConnected: func(_ context.Context, e *fsm.Event) {
+				s.prepareHeartbeatLifecycle("enter_connected")
 				s.HeartBeatCron.Start()
 				s.StartCheckHeartbeat()
 			},
@@ -146,12 +151,7 @@ func NewStateSession(gateway string, compressed int) *StateSession {
 		},
 	)
 
-	s.HeartBeatCron = cron.New()
-	interval := s.StatusParams[StatusConnected].MaxTime
-	s.HeartBeatCron.AddFunc(fmt.Sprintf("@every %ds", interval), func() {
-		s.SendHeartBeat()
-	})
-	s.PongTimeoutChan = make(chan time.Time)
+	s.prepareHeartbeatLifecycle("new_state_session")
 	return s
 }
 
@@ -346,9 +346,14 @@ func (s *StateSession) SendHeartBeat() error {
 		log.WithField("ping", string(data)).Info("Send Ping")
 		err = s.NetworkProxy.SendData(data)
 		if err != nil {
+			log.WithError(err).Warn("Send Ping failed")
 			return err
 		} else {
-			s.PongTimeoutChan <- s.LastPingAt.Add(time.Duration(s.Timeout) * time.Second)
+			select {
+			case s.PongTimeoutChan <- s.LastPingAt.Add(time.Duration(s.Timeout) * time.Second):
+			default:
+				log.Warn("skip pong timeout notification because heartbeat channel is full")
+			}
 		}
 	}
 	return nil
@@ -371,35 +376,76 @@ func (s *StateSession) receivePong(frame *event2.FrameMap) {
 }
 
 func (s *StateSession) StartCheckHeartbeat() {
-	log.Info("Start heartBeatTimeout check")
+	log.Info("ping loop started")
+	heartbeatCtx := s.HeartbeatCtx
+	pongTimeoutChan := s.PongTimeoutChan
 	go func() {
-		for pongTimeoutAt := range s.PongTimeoutChan {
-			log.WithField("pongTimeoutAt", pongTimeoutAt).Info("check pong receive timeout")
-			if s.FSM.Current() != StatusConnected && s.FSM.Current() != StatusRetry {
-				continue
-			}
-			if time.Now().Before(pongTimeoutAt) { // 还没有到的timeout检查时间点
-				time.Sleep(time.Until(pongTimeoutAt))
-				// 最后收到Pong时间比（约定检查时间-最大过期时间）早，表示在过去的约定的过期时间内及之后没有收到Pong
-				if s.LastPongAt.Before(pongTimeoutAt.Add(-time.Duration(s.Timeout) * time.Second)) {
-					log.Infof("Pong not received before:%s", pongTimeoutAt)
-					if s.FSM.Current() == StatusConnected {
-						err := s.FSM.Event(context.Background(), EventHeartbeatTimeout)
-						if err == nil {
-							s.HeartBeatCron.Stop()
+		defer log.Info("ping loop exited")
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				log.Info("ping loop received cancel signal")
+				return
+			case pongTimeoutAt := <-pongTimeoutChan:
+				log.WithField("pongTimeoutAt", pongTimeoutAt).Info("check pong receive timeout")
+				if s.FSM.Current() != StatusConnected && s.FSM.Current() != StatusRetry {
+					continue
+				}
+				if time.Now().Before(pongTimeoutAt) { // 还没有到的timeout检查时间点
+					time.Sleep(time.Until(pongTimeoutAt))
+					// 最后收到Pong时间比（约定检查时间-最大过期时间）早，表示在过去的约定的过期时间内及之后没有收到Pong
+					if s.LastPongAt.Before(pongTimeoutAt.Add(-time.Duration(s.Timeout) * time.Second)) {
+						log.Infof("Pong not received before:%s", pongTimeoutAt)
+						if s.FSM.Current() == StatusConnected {
+							err := s.FSM.Event(context.Background(), EventHeartbeatTimeout)
+							if err == nil {
+								s.stopHeartbeatLifecycle("heartbeat_timeout")
+							}
 						}
-					}
 
-					if s.FSM.Current() == StatusRetry {
-						err := s.FSM.Event(context.Background(), EventRetryHeartbeatTimeout)
-						if err == nil {
-							log.Infof("403 error:%v", err)
+						if s.FSM.Current() == StatusRetry {
+							err := s.FSM.Event(context.Background(), EventRetryHeartbeatTimeout)
+							if err == nil {
+								log.Infof("403 error:%v", err)
+							}
 						}
 					}
 				}
 			}
 		}
 	}()
+}
+
+func (s *StateSession) prepareHeartbeatLifecycle(reason string) {
+	s.HeartBeatCronMu.Lock()
+	defer s.HeartBeatCronMu.Unlock()
+
+	if s.HeartbeatCancel != nil {
+		log.WithField("reason", reason).Info("cancel previous ping loop before preparing new lifecycle")
+		s.HeartbeatCancel()
+	}
+	s.HeartbeatCtx, s.HeartbeatCancel = context.WithCancel(context.Background())
+	s.PongTimeoutChan = make(chan time.Time, 1)
+
+	s.HeartBeatCron = cron.New()
+	interval := s.StatusParams[StatusConnected].MaxTime
+	s.HeartBeatCron.AddFunc(fmt.Sprintf("@every %ds", interval), func() {
+		s.SendHeartBeat()
+	})
+	log.WithField("reason", reason).Info("prepared heartbeat lifecycle")
+}
+
+func (s *StateSession) stopHeartbeatLifecycle(reason string) {
+	s.HeartBeatCronMu.Lock()
+	defer s.HeartBeatCronMu.Unlock()
+
+	log.WithField("reason", reason).Info("stopping heartbeat lifecycle")
+	if s.HeartBeatCron != nil {
+		s.HeartBeatCron.Stop()
+	}
+	if s.HeartbeatCancel != nil {
+		s.HeartbeatCancel()
+	}
 }
 
 func (s *StateSession) ResumeOk() {
@@ -413,7 +459,7 @@ func (s *StateSession) ResumeOk() {
 func (s *StateSession) Reconnect() {
 	s.Trigger("status_reconnect", nil)
 	log.Info("reconnect")
-	s.HeartBeatCron.Stop()
+	s.stopHeartbeatLifecycle("state_session_reconnect")
 	s.GateWay = ""
 	s.RecvQueue = make(chan *event2.FrameMap)
 	s.MaxSn = 0
