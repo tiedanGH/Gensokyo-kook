@@ -66,6 +66,11 @@ type StatusParam struct {
 	MaxRetry   int
 }
 
+type HeartbeatCheck struct {
+	PingAt   time.Time
+	Deadline time.Time
+}
+
 /**                                                _________________
  *       获取gateWay     连接ws          收到hello |    心跳超时    |
  *             |           |                |      |      |         |
@@ -94,7 +99,7 @@ type StateSession struct {
 	HeartbeatDataMu sync.RWMutex
 	LastPongAt      time.Time
 	LastPingAt      time.Time
-	PongTimeoutChan chan time.Time
+	PongTimeoutChan chan HeartbeatCheck
 	HeartbeatCtx    context.Context
 	HeartbeatCancel context.CancelFunc
 }
@@ -358,7 +363,10 @@ func (s *StateSession) SendHeartBeat() error {
 				"timeoutWindow":  timeoutWindow.String(),
 			}).Info("scheduled pong deadline check")
 			select {
-			case s.PongTimeoutChan <- pongDeadlineAt:
+			case s.PongTimeoutChan <- HeartbeatCheck{
+				PingAt:   lastPingAt,
+				Deadline: pongDeadlineAt,
+			}:
 			default:
 				log.Warn("skip pong timeout notification because heartbeat channel is full")
 			}
@@ -394,8 +402,13 @@ func (s *StateSession) StartCheckHeartbeat() {
 			case <-heartbeatCtx.Done():
 				log.Info("ping loop received cancel signal")
 				return
-			case pongTimeoutAt := <-pongTimeoutChan:
-				log.WithField("pongDeadlineAt", pongTimeoutAt).Debug("heartbeat checker received pong deadline")
+			case heartbeatCheck := <-pongTimeoutChan:
+				pongDeadlineAt := heartbeatCheck.Deadline
+				pingAt := heartbeatCheck.PingAt
+				log.WithFields(log.Fields{
+					"pongDeadlineAt": pongDeadlineAt,
+					"pingAt":         pingAt,
+				}).Debug("heartbeat checker received pong deadline")
 				if s.FSM.Current() != StatusConnected && s.FSM.Current() != StatusRetry {
 					continue
 				}
@@ -404,12 +417,12 @@ func (s *StateSession) StartCheckHeartbeat() {
 				}
 				lastPongAt := s.getLastPongAt()
 				timeoutWindow := s.heartbeatTimeoutWindow()
-				lastPingAt := s.getLastPingAt()
-				if lastPongAt.Before(pongTimeoutAt) {
+				// 判定逻辑：只要在本次 ping 之后收到了 pong（lastPongAt >= pingAt），就不能算超时。
+				if lastPongAt.Before(pingAt) {
 					log.WithFields(log.Fields{
 						"pongDeadlineAt": pongTimeoutAt,
 						"lastPongAt":     lastPongAt,
-						"lastPingAt":     lastPingAt,
+						"pingAt":         pingAt,
 						"timeoutWindow":  timeoutWindow.String(),
 					}).Warn("pong receive timed out")
 					if s.FSM.Current() == StatusConnected {
@@ -430,7 +443,7 @@ func (s *StateSession) StartCheckHeartbeat() {
 					log.WithFields(log.Fields{
 						"pongDeadlineAt": pongTimeoutAt,
 						"lastPongAt":     lastPongAt,
-						"lastPingAt":     lastPingAt,
+						"pingAt":         pingAt,
 					}).Debug("pong received before deadline")
 				}
 			}
@@ -479,7 +492,7 @@ func (s *StateSession) prepareHeartbeatLifecycle(reason string) {
 		s.HeartbeatCancel()
 	}
 	s.HeartbeatCtx, s.HeartbeatCancel = context.WithCancel(context.Background())
-	s.PongTimeoutChan = make(chan time.Time, 1)
+	s.PongTimeoutChan = make(chan HeartbeatCheck, 1)
 
 	s.HeartBeatCron = cron.New()
 	interval := s.StatusParams[StatusConnected].MaxTime
