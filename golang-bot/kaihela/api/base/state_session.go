@@ -91,6 +91,7 @@ type StateSession struct {
 	StatusParams    map[string]*StatusParam
 	HeartBeatCron   *cron.Cron
 	HeartBeatCronMu sync.Mutex
+	HeartbeatDataMu sync.RWMutex
 	LastPongAt      time.Time
 	LastPingAt      time.Time
 	PongTimeoutChan chan time.Time
@@ -275,7 +276,7 @@ func (s *StateSession) receiveHello(frameMap *event2.FrameMap) {
 		code = int(_code.(float64))
 	}
 	if code == 0 {
-		s.LastPongAt = time.Now()
+		s.setLastPongAt(time.Now())
 		log.Info("receiveHello")
 		s.SaveSessionId(frameMap.Data["sessionId"].(string))
 		s.FSM.Event(context.Background(), EventHelloReceived)
@@ -342,15 +343,22 @@ func (s *StateSession) SendHeartBeat() error {
 			log.WithError(err).Error("sendHeartBeat unmarsal fail")
 			return err
 		}
-		s.LastPingAt = time.Now()
+		lastPingAt := time.Now()
+		s.setLastPingAt(lastPingAt)
 		log.WithField("ping", string(data)).Info("Send Ping")
 		err = s.NetworkProxy.SendData(data)
 		if err != nil {
 			log.WithError(err).Warn("Send Ping failed")
 			return err
 		} else {
+			timeoutWindow := s.heartbeatTimeoutWindow()
+			pongDeadlineAt := lastPingAt.Add(timeoutWindow)
+			log.WithFields(log.Fields{
+				"pongDeadlineAt": pongDeadlineAt,
+				"timeoutWindow":  timeoutWindow.String(),
+			}).Info("scheduled pong deadline check")
 			select {
-			case s.PongTimeoutChan <- s.LastPingAt.Add(time.Duration(s.Timeout) * time.Second):
+			case s.PongTimeoutChan <- pongDeadlineAt:
 			default:
 				log.Warn("skip pong timeout notification because heartbeat channel is full")
 			}
@@ -372,7 +380,7 @@ func (s *StateSession) RetryHeartbeat() error {
 func (s *StateSession) receivePong(frame *event2.FrameMap) {
 	log.Infof("receivePong %+v", frame)
 	s.FSM.Event(context.Background(), EventPongReceived)
-	s.LastPongAt = time.Now()
+	s.setLastPongAt(time.Now())
 }
 
 func (s *StateSession) StartCheckHeartbeat() {
@@ -387,33 +395,79 @@ func (s *StateSession) StartCheckHeartbeat() {
 				log.Info("ping loop received cancel signal")
 				return
 			case pongTimeoutAt := <-pongTimeoutChan:
-				log.WithField("pongTimeoutAt", pongTimeoutAt).Info("check pong receive timeout")
+				log.WithField("pongDeadlineAt", pongTimeoutAt).Debug("heartbeat checker received pong deadline")
 				if s.FSM.Current() != StatusConnected && s.FSM.Current() != StatusRetry {
 					continue
 				}
 				if time.Now().Before(pongTimeoutAt) { // 还没有到的timeout检查时间点
 					time.Sleep(time.Until(pongTimeoutAt))
-					// 最后收到Pong时间比（约定检查时间-最大过期时间）早，表示在过去的约定的过期时间内及之后没有收到Pong
-					if s.LastPongAt.Before(pongTimeoutAt.Add(-time.Duration(s.Timeout) * time.Second)) {
-						log.Infof("Pong not received before:%s", pongTimeoutAt)
-						if s.FSM.Current() == StatusConnected {
-							err := s.FSM.Event(context.Background(), EventHeartbeatTimeout)
-							if err == nil {
-								s.stopHeartbeatLifecycle("heartbeat_timeout")
-							}
-						}
-
-						if s.FSM.Current() == StatusRetry {
-							err := s.FSM.Event(context.Background(), EventRetryHeartbeatTimeout)
-							if err == nil {
-								log.Infof("403 error:%v", err)
-							}
+				}
+				lastPongAt := s.getLastPongAt()
+				timeoutWindow := s.heartbeatTimeoutWindow()
+				lastPingAt := s.getLastPingAt()
+				if lastPongAt.Before(pongTimeoutAt) {
+					log.WithFields(log.Fields{
+						"pongDeadlineAt": pongTimeoutAt,
+						"lastPongAt":     lastPongAt,
+						"lastPingAt":     lastPingAt,
+						"timeoutWindow":  timeoutWindow.String(),
+					}).Warn("pong receive timed out")
+					if s.FSM.Current() == StatusConnected {
+						log.Warn("triggering disconnect handling due to heartbeat timeout")
+						err := s.FSM.Event(context.Background(), EventHeartbeatTimeout)
+						if err == nil {
+							s.stopHeartbeatLifecycle("heartbeat_timeout")
 						}
 					}
+
+					if s.FSM.Current() == StatusRetry {
+						err := s.FSM.Event(context.Background(), EventRetryHeartbeatTimeout)
+						if err == nil {
+							log.Infof("403 error:%v", err)
+						}
+					}
+				} else {
+					log.WithFields(log.Fields{
+						"pongDeadlineAt": pongTimeoutAt,
+						"lastPongAt":     lastPongAt,
+						"lastPingAt":     lastPingAt,
+					}).Debug("pong received before deadline")
 				}
 			}
 		}
 	}()
+}
+
+func (s *StateSession) heartbeatTimeoutWindow() time.Duration {
+	if s.Timeout > 0 {
+		return time.Duration(s.Timeout) * time.Second
+	}
+	// 当服务端未下发 timeout 时，回退到一个安全默认值，避免“发包即超时”的误判。
+	return time.Duration(s.StatusParams[StatusConnected].MaxTime) * time.Second
+}
+
+func (s *StateSession) setLastPingAt(t time.Time) {
+	s.HeartbeatDataMu.Lock()
+	defer s.HeartbeatDataMu.Unlock()
+	s.LastPingAt = t
+}
+
+func (s *StateSession) getLastPingAt() time.Time {
+	s.HeartbeatDataMu.RLock()
+	defer s.HeartbeatDataMu.RUnlock()
+	return s.LastPingAt
+}
+
+func (s *StateSession) setLastPongAt(t time.Time) {
+	s.HeartbeatDataMu.Lock()
+	defer s.HeartbeatDataMu.Unlock()
+	s.LastPongAt = t
+}
+
+func (s *StateSession) getLastPongAt() time.Time {
+	s.HeartbeatDataMu.RLock()
+	defer s.HeartbeatDataMu.RUnlock()
+	return s.LastPongAt
 }
 
 func (s *StateSession) prepareHeartbeatLifecycle(reason string) {
