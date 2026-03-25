@@ -374,7 +374,7 @@ func (s *StateSession) StartCheckHeartbeat() {
 	log.Info("Start heartBeatTimeout check")
 	go func() {
 		for pongTimeoutAt := range s.PongTimeoutChan {
-			log.WithField("pongTimeoutAt", pongTimeoutAt).Info("check pong receive timeout")
+			log.WithField("pongTimeoutAt", pongTimeoutAt).Debug("pong timeout check scheduled")
 			if s.FSM.Current() != StatusConnected && s.FSM.Current() != StatusRetry {
 				continue
 			}

@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/gorilla/websocket"
@@ -16,11 +17,13 @@ import (
 
 type WebSocketSession struct {
 	*StateSession
-	Token       string
-	BaseUrl     string
-	SessionFile string
-	WsConn      *websocket.Conn
-	WsWriteLock *sync.Mutex
+	Token        string
+	BaseUrl      string
+	SessionFile  string
+	WsConn       *websocket.Conn
+	WsWriteLock  *sync.Mutex
+	ReconnectMu  sync.Mutex
+	Reconnecting bool
 	//sWSClient
 }
 
@@ -95,7 +98,8 @@ func (ws *WebSocketSession) ConnectWebsocket(gateway string) error {
 		for {
 			_, message, err := c.ReadMessage()
 			if err != nil {
-				log.Println("read:", err)
+				log.WithError(err).Warn("kook websocket read failed")
+				ws.handleDisconnect(err)
 				return
 			}
 			log.WithField("message", message).Trace("websocket recv")
@@ -107,6 +111,61 @@ func (ws *WebSocketSession) ConnectWebsocket(gateway string) error {
 	}()
 	return nil
 }
+
+func (ws *WebSocketSession) handleDisconnect(err error) {
+	ws.ReconnectMu.Lock()
+	if ws.Reconnecting {
+		ws.ReconnectMu.Unlock()
+		return
+	}
+	ws.Reconnecting = true
+	ws.ReconnectMu.Unlock()
+
+	go ws.reconnectLoop(err)
+}
+
+func (ws *WebSocketSession) reconnectLoop(lastErr error) {
+	defer func() {
+		ws.ReconnectMu.Lock()
+		ws.Reconnecting = false
+		ws.ReconnectMu.Unlock()
+	}()
+
+	log.WithError(lastErr).Warn("kook websocket disconnected, start reconnect loop")
+	ws.HeartBeatCron.Stop()
+	if ws.WsConn != nil {
+		_ = ws.WsConn.Close()
+		ws.WsConn = nil
+	}
+
+	for {
+		for attempt := 1; attempt <= 5; attempt++ {
+			log.Infof("kook websocket reconnect attempt %d/5", attempt)
+
+			gateway, err := ws.ReqGateWay()
+			if err != nil {
+				log.WithError(err).Warn("kook websocket reconnect failed to get gateway")
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			ws.GateWay = gateway
+			ws.FSM.SetState(StatusGateway)
+			err = ws.ConnectWebsocket(gateway)
+			if err == nil {
+				log.Info("kook websocket reconnect dial success")
+				return
+			}
+
+			log.WithError(err).Warn("kook websocket reconnect dial failed")
+			time.Sleep(5 * time.Second)
+		}
+
+		log.Warn("kook websocket reconnect 5 attempts failed, sleep 60 seconds before next round")
+		time.Sleep(60 * time.Second)
+	}
+}
+
 func (ws *WebSocketSession) SendData(data []byte) error {
 	ws.WsWriteLock.Lock()
 	defer ws.WsWriteLock.Unlock()
