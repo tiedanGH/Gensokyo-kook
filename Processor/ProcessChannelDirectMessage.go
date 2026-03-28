@@ -18,6 +18,10 @@ import (
 
 // ProcessChannelDirectMessage 处理频道私信消息 这里我们是被动收到
 func (p *Processors) ProcessChannelDirectMessage(data *event.MessageKMarkdownEvent) error {
+	if shouldDropInboundEvent("guild_private", data) {
+		return nil
+	}
+
 	// 打印data结构体
 	//PrintStructWithFieldNames(data)
 
