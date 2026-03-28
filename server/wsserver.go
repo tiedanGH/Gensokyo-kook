@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +21,10 @@ type WebSocketServerClient struct {
 	Conn    *websocket.Conn
 	Token   string
 	BaseUrl string
+
+	sendQueue chan []byte
+	closeOnce sync.Once
+	closed    chan struct{}
 }
 
 var upgrader = websocket.Upgrader{
@@ -84,10 +90,13 @@ func wsHandler(Token string, BaseUrl string, p *Processor.Processors, c *gin.Con
 
 	// 创建WebSocketServerClient实例
 	client := &WebSocketServerClient{
-		Conn:    conn,
-		Token:   Token,
-		BaseUrl: BaseUrl,
+		Conn:      conn,
+		Token:     Token,
+		BaseUrl:   BaseUrl,
+		sendQueue: make(chan []byte, 128),
+		closed:    make(chan struct{}),
 	}
+	go client.writePump()
 	// 将此客户端添加到Processor的WsServerClients列表中
 	p.WsServerClients = append(p.WsServerClients, client)
 
@@ -118,7 +127,7 @@ func wsHandler(Token string, BaseUrl string, p *Processor.Processors, c *gin.Con
 		}
 	}()
 	//退出时候的清理
-	defer conn.Close()
+	defer client.Close()
 
 	for {
 		messageType, p, err := conn.ReadMessage()
@@ -153,9 +162,40 @@ func (c *WebSocketServerClient) SendMessage(message map[string]interface{}) erro
 		mylog.Println("Error marshalling message:", err)
 		return err
 	}
-	return c.Conn.WriteMessage(websocket.TextMessage, msgBytes)
+
+	select {
+	case <-c.closed:
+		return errors.New("websocket client is closed")
+	default:
+	}
+
+	select {
+	case <-c.closed:
+		return errors.New("websocket client is closed")
+	case c.sendQueue <- msgBytes:
+		return nil
+	}
 }
 
 func (client *WebSocketServerClient) Close() error {
-	return client.Conn.Close()
+	var err error
+	client.closeOnce.Do(func() {
+		close(client.closed)
+		err = client.Conn.Close()
+	})
+	return err
+}
+
+func (c *WebSocketServerClient) writePump() {
+	for {
+		select {
+		case <-c.closed:
+			return
+		case msgBytes := <-c.sendQueue:
+			if err := c.Conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
+				mylog.Printf("Error writing websocket response: %v", err)
+				return
+			}
+		}
+	}
 }
