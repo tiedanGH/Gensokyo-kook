@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/avast/retry-go/v4"
@@ -92,6 +93,7 @@ type StateSession struct {
 	LastPongAt      time.Time
 	LastPingAt      time.Time
 	PongTimeoutChan chan time.Time
+	FrameDedupe     *ttlDedupeCache
 }
 
 func NewStateSession(gateway string, compressed int) *StateSession {
@@ -152,6 +154,7 @@ func NewStateSession(gateway string, compressed int) *StateSession {
 		s.SendHeartBeat()
 	})
 	s.PongTimeoutChan = make(chan time.Time)
+	s.FrameDedupe = newTTLDedupeCache()
 	return s
 }
 
@@ -296,19 +299,116 @@ func (s *StateSession) SaveSessionId(sessionId string) {
 func (s *StateSession) StartProcessEvent() {
 	go func() {
 		for frame := range s.RecvQueue {
+			log.WithFields(log.Fields{
+				"stage":         "dequeue",
+				"frame_sn":      frame.SerialNumber,
+				"frame_signal":  frame.SignalType,
+				"queue_pointer": fmt.Sprintf("%p", s.RecvQueue),
+				"session_id":    s.SessionId,
+				"fsm_state":     s.FSM.Current(),
+				"session_ptr":   fmt.Sprintf("%p", s),
+				"msg_id":        getFrameString(frame, "msg_id"),
+			}).Info("ReceiveFrameHandler queue event")
 			s.ReceiveFrame(frame)
 		}
 	}()
 }
 
+func getFrameString(frame *event2.FrameMap, key string) string {
+	if frame == nil || frame.Data == nil {
+		return ""
+	}
+	if v, ok := frame.Data[key]; ok {
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+	return ""
+}
+
+func (s *StateSession) shouldSkipDuplicatedEvent(frame *event2.FrameMap) (bool, string, string) {
+	channelType := getFrameString(frame, "channel_type")
+	msgID := getFrameString(frame, "msg_id")
+	nonce := getFrameString(frame, "nonce")
+	authorID := getFrameString(frame, "author_id")
+	targetID := getFrameString(frame, "target_id")
+
+	// 第一层严格去重：同 channel_type + msg_id。
+	if msgID != "" {
+		key := fmt.Sprintf("strict:%s:%s", channelType, msgID)
+		hit, _ := s.FrameDedupe.hitOrStore(key, 10*time.Minute, time.Now())
+		if hit {
+			return true, "strict_msg_id", key
+		}
+		return false, "strict_msg_id", key
+	}
+
+	// 第二层保守去重：没有 msg_id 时用 nonce 兜底，窗口更短。
+	if nonce != "" {
+		key := fmt.Sprintf("fallback_nonce:%s:%s:%s:%s", channelType, targetID, authorID, nonce)
+		hit, _ := s.FrameDedupe.hitOrStore(key, 2*time.Second, time.Now())
+		if hit {
+			return true, "fallback_nonce", key
+		}
+		return false, "fallback_nonce", key
+	}
+
+	return false, "none", ""
+}
+
 func (s *StateSession) ReceiveFrameHandler(frame *event2.FrameMap) ([]byte, error) {
+	channelType := getFrameString(frame, "channel_type")
+	msgID := getFrameString(frame, "msg_id")
+	nonce := getFrameString(frame, "nonce")
+	authorID := getFrameString(frame, "author_id")
+	targetID := getFrameString(frame, "target_id")
+
+	log.WithFields(log.Fields{
+		"session_id":   s.SessionId,
+		"session_ptr":  fmt.Sprintf("%p", s),
+		"fsm_state":    s.FSM.Current(),
+		"frame_signal": frame.SignalType,
+		"frame_sn":     frame.SerialNumber,
+		"msg_id":       msgID,
+		"nonce":        nonce,
+		"author_id":    authorID,
+		"target_id":    targetID,
+		"channel_type": channelType,
+	}).Info("ReceiveFrameHandler ingress")
+
 	switch frame.SignalType {
 	case event2.SIG_EVENT:
 		{
+			if skip, layer, key := s.shouldSkipDuplicatedEvent(frame); skip {
+				log.WithFields(log.Fields{
+					"session_id":    s.SessionId,
+					"session_ptr":   fmt.Sprintf("%p", s),
+					"fsm_state":     s.FSM.Current(),
+					"frame_sn":      frame.SerialNumber,
+					"msg_id":        msgID,
+					"nonce":         nonce,
+					"author_id":     authorID,
+					"target_id":     targetID,
+					"channel_type":  channelType,
+					"dedupe_layer":  layer,
+					"dedupe_key":    key,
+					"queue_pointer": fmt.Sprintf("%p", s.RecvQueue),
+				}).Warn("Drop duplicated KOOK inbound frame before enqueue")
+				return nil, nil
+			}
+
 			if s.FSM.Current() == StatusConnected {
 				if frame.SerialNumber > s.MaxSn {
 					s.MaxSn = frame.SerialNumber
 				}
+				log.WithFields(log.Fields{
+					"stage":         "enqueue",
+					"frame_sn":      frame.SerialNumber,
+					"frame_signal":  frame.SignalType,
+					"queue_pointer": fmt.Sprintf("%p", s.RecvQueue),
+					"session_id":    s.SessionId,
+					"fsm_state":     s.FSM.Current(),
+					"session_ptr":   fmt.Sprintf("%p", s),
+					"msg_id":        msgID,
+				}).Info("ReceiveFrameHandler queue event")
 				s.RecvQueue <- frame
 			}
 		}

@@ -22,6 +22,10 @@ func getGuildAuthorID(data *event.MessageKMarkdownEvent) string {
 
 // ProcessGuildNormalMessage 处理频道常规消息
 func (p *Processors) ProcessGuildNormalMessage(data *event.MessageKMarkdownEvent) error {
+	if shouldDropInboundEvent("guild", data) {
+		return nil
+	}
+
 	if !p.Settings.GlobalChannelToGroup {
 		// 将时间字符串转换为时间戳
 
