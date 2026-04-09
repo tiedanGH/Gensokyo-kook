@@ -132,6 +132,7 @@ type Settings struct {
 	KaiheilaApi            string               `yaml:"kaiheila_api"`
 	Ob11Int32              bool                 `yaml:"ob11_int32"`
 	IgnoreBotMessage       bool                 `yaml:"ignore_bot_message"`
+	DisbandForChannelDel   bool                 `yaml:"disband_for_channel_delete"` // 频道删除时使用 disband 替代 kick
 }
 
 // LoadConfig 从文件中加载配置并初始化单例配置
@@ -1629,4 +1630,15 @@ func GetGlobalChannelToGroup() bool {
 		return false
 	}
 	return instance.Settings.GlobalChannelToGroup
+}
+
+func GetDisbandForChannelDelete() bool {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if instance == nil {
+		mylog.Println("Warning: instance is nil when trying to DisbandForChannelDel value.")
+		return false
+	}
+	return instance.Settings.DisbandForChannelDel
 }
