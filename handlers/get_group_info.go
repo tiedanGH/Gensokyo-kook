@@ -2,20 +2,22 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/hoshinonyaruko/gensokyo-kook/callapi"
 	"github.com/hoshinonyaruko/gensokyo-kook/idmap"
 	"github.com/hoshinonyaruko/gensokyo-kook/mylog"
-
-	"github.com/tencent-connect/botgo/dto"
+	"github.com/idodo/golang-bot/kaihela/api/helper"
 )
 
-// func init() {
-// 	callapi.RegisterHandler("get_group_info", HandleGetGroupInfo)
-// }
+func init() {
+	callapi.RegisterHandler("get_group_info", HandleGetGroupInfo)
+}
 
 type OnebotGroupInfo struct {
-	Data    GroupInfo   `json:"data"`
+	Data    GroupInfo    `json:"data"`
 	Message string      `json:"message"`
 	RetCode int         `json:"retcode"`
 	Status  string      `json:"status"`
@@ -32,138 +34,121 @@ type GroupInfo struct {
 	MaxMemberCount  int32  `json:"max_member_count"`
 }
 
-func ConvertGuildToGroupInfo(guild *dto.Guild, GroupId string, message callapi.ActionMessage) *OnebotGroupInfo {
-	// 使用idmap.StoreIDv2映射GroupId到一个int64的值
-	groupid64, err := idmap.StoreIDv2(GroupId)
+func HandleGetGroupInfo(client callapi.Client, Token string, BaseUrl string, message callapi.ActionMessage) (string, error) {
+	var groupIDStr string
+	switch v := message.Params.GroupID.(type) {
+	case string:
+		groupIDStr = v
+	case float64:
+		groupIDStr = fmt.Sprintf("%.0f", v)
+	default:
+		mylog.Printf("get_group_info: invalid group_id type: %T", message.Params.GroupID)
+		return "", nil
+	}
+
+	if groupIDStr == "" {
+		mylog.Printf("get_group_info: group_id is empty")
+		return "", nil
+	}
+
+	// Try to reverse-map the int64 group_id back to the original KOOK channel ID
+	realID, err := idmap.RetrieveRowByIDv2(groupIDStr)
 	if err != nil {
-		mylog.Printf("Error storing GroupID: %v", err)
-		return nil
+		mylog.Printf("get_group_info: error retrieving real ID for %s: %v", groupIDStr, err)
+		// If reverse lookup fails, treat groupIDStr as-is (it may already be a raw KOOK guild ID)
+		realID = groupIDStr
 	}
 
-	ts, err := guild.JoinedAt.Time()
+	// Check if this ID has an associated guild_id (i.e., it's a channel mapped to a guild)
+	guildID, err := idmap.ReadConfigv2(realID, "guild_id")
+	if err != nil || guildID == "" {
+		// No guild_id stored — this might be a guild ID itself, try using realID as guild_id
+		guildID = realID
+	}
+
+	// Fetch guild info from KOOK API /v3/guild/view
+	api := helper.NewApiHelper("/v3/guild/view", Token, BaseUrl, "", "")
+	api.SetQuery(map[string]string{
+		"guild_id": guildID,
+	})
+	resp, err := api.Get()
 	if err != nil {
-		mylog.Printf("转换JoinedAt失败: %v", err)
-		return nil
-	}
-	groupCreateTime := int32(ts.Unix())
-
-	groupInfo := &GroupInfo{
-		GroupID:         groupid64,
-		GroupName:       guild.Name,
-		GroupMemo:       guild.Desc,
-		GroupCreateTime: groupCreateTime,
-		GroupLevel:      0,
-		MemberCount:     int32(guild.MemberCount),
-		MaxMemberCount:  int32(guild.MaxMembers),
+		mylog.Printf("get_group_info: error fetching guild view for %s: %v", guildID, err)
+		return "", nil
 	}
 
-	// 创建 OnebotGroupInfo 实例并填充数据
-	onebotGroupInfo := &OnebotGroupInfo{
-		Data:    *groupInfo,
+	var guildViewResp struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    struct {
+			ID               string `json:"id"`
+			Name             string `json:"name"`
+			Topic            string `json:"topic"`
+			UserID           string `json:"user_id"`
+			Icon             string `json:"icon"`
+			NotifyType       int    `json:"notify_type"`
+			Region           string `json:"region"`
+			EnableOpen       bool   `json:"enable_open"`
+			OpenID           string `json:"open_id"`
+			DefaultChannelID string `json:"default_channel_id"`
+			WelcomeChannelID string `json:"welcome_channel_id"`
+			BoostNum         int    `json:"boost_num"`
+			Level            int    `json:"level"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &guildViewResp); err != nil {
+		mylog.Printf("get_group_info: error unmarshaling guild view response: %v", err)
+		return "", nil
+	}
+
+	if guildViewResp.Code != 0 {
+		mylog.Printf("get_group_info: KOOK API error code %d: %s", guildViewResp.Code, guildViewResp.Message)
+		return "", nil
+	}
+
+	// Build the group_id for the response: use the original requested ID
+	groupID64, _ := strconv.ParseInt(groupIDStr, 10, 64)
+
+	groupInfo := &OnebotGroupInfo{
+		Data: GroupInfo{
+			GroupID:         groupID64,
+			GroupName:       guildViewResp.Data.Name,
+			GroupMemo:       guildViewResp.Data.Topic,
+			GroupCreateTime: int32(time.Now().Unix()),
+			GroupLevel:      int32(guildViewResp.Data.Level),
+			MemberCount:     0,
+			MaxMemberCount:  0,
+		},
 		Message: "success",
 		RetCode: 0,
 		Status:  "ok",
 	}
+
 	if message.Echo == "" {
-		onebotGroupInfo.Echo = "0"
+		groupInfo.Echo = "0"
 	} else {
-		onebotGroupInfo.Echo = message.Echo
+		groupInfo.Echo = message.Echo
 	}
 
-	return onebotGroupInfo
+	groupInfoMap := structToMap(groupInfo)
+
+	mylog.Printf("get_group_info: %+v", groupInfoMap)
+
+	err = client.SendMessage(groupInfoMap)
+	if err != nil {
+		mylog.Printf("get_group_info: error sending message via client: %v", err)
+	}
+
+	result, err := json.Marshal(groupInfo)
+	if err != nil {
+		mylog.Printf("get_group_info: error marshaling data: %v", err)
+		return "", nil
+	}
+
+	return string(result), nil
 }
 
-// func HandleGetGroupInfo(client callapi.Client, Token string, BaseUrl string, message callapi.ActionMessage) (string, error) {
-// 	params := message.Params
-// 	// 使用 message.Echo 作为key来获取消息类型
-// 	var msgType string
-// 	var groupInfo *OnebotGroupInfo
-// 	var err error
-// 	if echoStr, ok := message.Echo.(string); ok {
-// 		// 当 message.Echo 是字符串类型时执行此块
-// 		msgType = echo.GetMsgTypeByKey(echoStr)
-// 	}
-// 	//如果获取不到 就用user_id获取信息类型
-// 	if msgType == "" {
-// 		msgType = GetMessageTypeByUserid(config.GetAppIDStr(), message.Params.UserID)
-// 	}
-
-// 	//如果获取不到 就用group_id获取信息类型
-// 	if msgType == "" {
-// 		msgType = GetMessageTypeByGroupid(config.GetAppIDStr(), message.Params.GroupID)
-// 	}
-// 	switch msgType {
-// 	case "guild", "guild_private":
-// 		//用GroupID给ChannelID赋值,因为我们是把频道虚拟成了群
-// 		ChannelID := params.GroupID
-// 		// 使用RetrieveRowByIDv2还原真实的ChannelID
-// 		mylog.Printf("测试:%v", ChannelID.(string))
-// 		RChannelID, err := idmap.RetrieveRowByIDv2(ChannelID.(string))
-// 		if err != nil {
-// 			mylog.Printf("error retrieving real ChannelID: %v", err)
-// 		}
-// 		//读取ini 通过ChannelID取回之前储存的guild_id
-// 		value, err := idmap.ReadConfigv2(RChannelID, "guild_id")
-// 		if err != nil {
-// 			mylog.Printf("handleGetGroupInfo:Error reading config: %v\n", err)
-// 			return "", nil
-// 		}
-// 		//最后获取到guildID
-// 		guildID := value
-// 		mylog.Printf("调试,准备groupInfoMap(频道)guildID:%v", guildID)
-// 		guild, err := api.Guild(context.TODO(), guildID)
-// 		if err != nil {
-// 			mylog.Printf("获取频道信息失败: %v", err)
-// 			return "", nil
-// 		}
-// 		groupInfo = ConvertGuildToGroupInfo(guild, guildID, message)
-// 	default:
-// 		var groupid int64
-// 		groupid, _ = strconv.ParseInt(message.Params.GroupID.(string), 10, 64)
-// 		groupCreateTime := time.Now().Unix()
-// 		// 创建 GroupInfo 实例
-// 		groupInfo1 := &GroupInfo{
-// 			GroupID:         groupid,
-// 			GroupName:       "测试群",
-// 			GroupMemo:       "这是一个测试群",
-// 			GroupCreateTime: int32(groupCreateTime),
-// 			GroupLevel:      0,
-// 			MemberCount:     500,
-// 			MaxMemberCount:  1000,
-// 		}
-// 		// 创建 OnebotGroupInfo 实例并嵌入 GroupInfo
-// 		groupInfo = &OnebotGroupInfo{
-// 			Data:    *groupInfo1, // 将 groupInfo 添加到 Data 切片中
-// 			Message: "success",
-// 			RetCode: 0,
-// 			Status:  "ok",
-// 		}
-// 		if message.Echo == "" {
-// 			groupInfo.Echo = "0"
-// 		} else {
-// 			groupInfo.Echo = message.Echo
-// 		}
-// 	}
-// 	groupInfoMap := structToMap(groupInfo)
-
-// 	// 打印groupInfoMap的内容
-// 	mylog.Printf("groupInfoMap(频道): %+v\n", groupInfoMap)
-
-// 	err = client.SendMessage(groupInfoMap) //发回去
-// 	if err != nil {
-// 		mylog.Printf("error sending group info via wsclient: %v", err)
-// 	}
-// 	//把结果从struct转换为json
-// 	result, err := json.Marshal(groupInfo)
-// 	if err != nil {
-// 		mylog.Printf("Error marshaling data: %v", err)
-// 		//todo 符合onebotv11 ws返回的错误码
-// 		return "", nil
-// 	}
-// 	return string(result), nil
-// }
-
-// 将结构体转换为 map[string]interface{}
+// structToMap 将结构体转换为 map[string]interface{}
 func structToMap(obj interface{}) map[string]interface{} {
 	out := make(map[string]interface{})
 	j, _ := json.Marshal(obj)
