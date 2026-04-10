@@ -148,6 +148,7 @@ func main() {
 			session.On(base.EventReceiveFrame, &handler.ReceiveFrameHandler{})
 			session.On("GROUP*", &GroupEventHandler{})
 			session.On("GROUP_9", &GroupTextEventHandler{Token: conf.Settings.Token, BaseUrl: conf.Settings.KaiheilaApi})
+			session.On("GROUP_255", &GroupSystemEventHandler{Token: conf.Settings.Token, BaseUrl: conf.Settings.KaiheilaApi})
 			session.On("PERSON_9", &PersonTextEventHandler{Token: conf.Settings.Token, BaseUrl: conf.Settings.KaiheilaApi})
 			// 启动session.Start() 在一个新的goroutine
 			go session.Start()
@@ -431,6 +432,78 @@ type GroupEventHandler struct {
 
 func (ge *GroupEventHandler) Handle(e event.Event) error {
 	mylog.Printf("event: %+v, 收到频道内的事件消息.", e.Data())
+	return nil
+}
+
+type GroupSystemEventHandler struct {
+	Token   string
+	BaseUrl string
+}
+
+func (gseh *GroupSystemEventHandler) Handle(e event.Event) error {
+	mylog.Printf("bot[%v]event: %+v, 收到频道内的系统事件.", handlers.BotID, e.Data())
+
+	err := func() error {
+		if _, ok := e.Data()[base.EventDataFrameKey]; !ok {
+			mylog.Errorf("data has no frame field")
+			return nil
+		}
+		frame := e.Data()[base.EventDataFrameKey].(*event2.FrameMap)
+
+		// 从 frame.Data 中提取 extra 字段
+		extraRaw, ok := frame.Data["extra"]
+		if !ok {
+			mylog.Printf("GroupSystemEventHandler: no extra field in frame data")
+			return nil
+		}
+		extraMap, ok := extraRaw.(map[string]interface{})
+		if !ok {
+			mylog.Printf("GroupSystemEventHandler: extra is not a map")
+			return nil
+		}
+
+		// 获取系统事件类型
+		eventType, _ := extraMap["type"].(string)
+		bodyRaw, ok := extraMap["body"]
+		if !ok {
+			mylog.Printf("GroupSystemEventHandler: no body in extra")
+			return nil
+		}
+
+		// 将 body 序列化再反序列化到具体结构
+		bodyBytes, err := sonic.Marshal(bodyRaw)
+		if err != nil {
+			mylog.Printf("GroupSystemEventHandler: marshal body error: %v", err)
+			return nil
+		}
+
+		switch eventType {
+		case "added_channel":
+			var body Processor.ChannelAddedBody
+			if err := sonic.Unmarshal(bodyBytes, &body); err != nil {
+				mylog.Printf("GroupSystemEventHandler: unmarshal added_channel body error: %v", err)
+				return nil
+			}
+			return p.ProcessChannelAdded(&body)
+
+		case "deleted_channel":
+			var body Processor.ChannelDeletedBody
+			if err := sonic.Unmarshal(bodyBytes, &body); err != nil {
+				mylog.Printf("GroupSystemEventHandler: unmarshal deleted_channel body error: %v", err)
+				return nil
+			}
+			return p.ProcessChannelDeleted(&body)
+
+		default:
+			mylog.Printf("GroupSystemEventHandler: 未处理的系统事件类型: %s", eventType)
+		}
+
+		return nil
+	}()
+	if err != nil {
+		mylog.Errorf("GroupSystemEventHandler err: %v", err)
+	}
+
 	return nil
 }
 

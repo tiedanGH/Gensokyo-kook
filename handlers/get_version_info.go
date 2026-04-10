@@ -43,7 +43,7 @@ func GetVersionInfo(client callapi.Client, Token string, BaseUrl string, message
 	response.Data = VersionData{
 		AppFullName:              "gensokyo-kook",
 		AppName:                  "gensokyo-kook",
-		AppVersion:               "v1.0.0",
+		AppVersion:               "1.0.0",
 		CoolQDirectory:           "",
 		CoolQEdition:             "pro",
 		GoCQHTTP:                 true,
@@ -54,7 +54,7 @@ func GetVersionInfo(client callapi.Client, Token string, BaseUrl string, message
 		ProtocolVersion:          "v11",
 		RuntimeOS:                "windows",
 		RuntimeVersion:           "go1.20.2",
-		Version:                  "v1.0.0",
+		Version:                  "1.0.0",
 	}
 	response.Message = ""
 	response.RetCode = 0
